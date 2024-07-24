@@ -258,18 +258,36 @@ func checkPods(c *k8s.Client, o Options, i bool) {
 		}
 	}
 	for {
-		pods, _ := c.K8sClientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{LabelSelector: "kubearmor-app=kubearmor", FieldSelector: "status.phase==Running"})
+		pods, _ := c.K8sClientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{LabelSelector: "kubearmor-app=kubearmor"})
 		podno := len(pods.Items)
 		fmt.Printf("\rℹ️\tWaiting for Daemonset to start: %s", cursor[cursorcount])
 		cursorcount++
 		if cursorcount == len(cursor) {
 			cursorcount = 0
 		}
-		if podno > 0 {
-			fmt.Printf("\r🥳\tKubeArmor Daemonset Deployed!             \n")
-			fmt.Printf("\r🥳\tDone Checking , ALL Services are running!             \n")
-			fmt.Printf("⌚️\tExecution Time : %s \n", time.Since(stime))
+		if podno == 0 {
+			fmt.Printf("\r\tNo pods found!             \n")
 			break
+		}
+		if podno > 0 {
+			allPodsReady := true
+			// This loop will break even if only one of the pod is not ready
+			for _, p := range pods.Items {
+				status, ready := GetRealPodStatus(p)
+				fmt.Printf("\r\tThe pod %s is in %s state             ", p.Name, status)
+				if !ready {
+					allPodsReady = false
+					break
+				}
+			}
+			if !allPodsReady {
+				break
+			} else {
+				fmt.Printf("\r🥳\tKubeArmor Daemonset Deployed!             \n")
+				fmt.Printf("\r🥳\tDone Checking , ALL Services are running!             \n")
+				fmt.Printf("⌚️\tExecution Time : %s \n", time.Since(stime))
+				break
+			}
 		}
 		if !otime.After(time.Now()) {
 			fmt.Printf("\r⌚️\tCheck Incomplete due to Time-Out!                     \n")
@@ -313,6 +331,30 @@ func checkPods(c *k8s.Client, o Options, i bool) {
 		}
 		break
 	}
+}
+
+// This accumulates the overall status of pod. A pod may be running but it's containers might not
+// It will return the reason and a boolean which will be true only if all the containers of pod are running
+// The reason is wholesome status of the pod. It may be Running/CrashLoopBackOff or any other state
+func GetRealPodStatus(pod corev1.Pod) (string, bool) {
+	status := pod.Status.Phase
+	reason := string(status)
+	var podReady = false
+	if status == corev1.PodRunning {
+		for _, containerStatus := range pod.Status.ContainerStatuses {
+			if !containerStatus.Ready {
+				if containerStatus.State.Waiting != nil {
+					reason = containerStatus.State.Waiting.Reason
+				} else if containerStatus.State.Terminated != nil {
+					reason = containerStatus.State.Terminated.Reason
+				}
+				return reason, false
+			} else {
+				podReady = true
+			}
+		}
+	}
+	return reason, podReady
 }
 
 func checkPodsLegacy(c *k8s.Client, o Options) {
